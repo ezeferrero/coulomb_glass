@@ -3,40 +3,39 @@ BIN = coulomb_glass
 
 # Pathts & Includes
 CUDA_INSTALL_PATH	= /usr/local/cuda
-#CUDA_INSTALL_PATH	?= /usr
-CUDASDK_INSTALL_PATH	= /opt/cudasdk
+#CUDASDK_INSTALL_PATH	= /opt/cudasdk
 CUDA_LIB_PATH		= $(CUDA_INSTALL_PATH)/lib64
-CUDASDK_LIB_PATH	= $(CUDASDK_INSTALL_PATH)/C/lib64
-INCLUDES	       += -I. -I$(CUDA_INSTALL_PATH)/include -I$(CUDASDK_INSTALL_PATH)/C/common/inc \
-			-I$(CUDASDK_INSTALL_PATH)/shared/inc -I/home/eferrero/EW_Langevin/common/
+#CUDASDK_LIB_PATH		= $(CUDASDK_INSTALL_PATH)/C/lib64
+INCLUDES			+= -I. -I$(CUDA_INSTALL_PATH)/include -I../common/ -I../common/RNGcommon/ \
+		#-I$(CUDASDK_INSTALL_PATH)/C/common/inc -I$(CUDASDK_INSTALL_PATH)/shared/inc 
 
 # Flags
-LIBS			= -L$(CUDA_LIB_PATH) -L$(CUDASDK_LIB_PATH)
+LIBS			= -L$(CUDA_LIB_PATH) #-L$(CUDASDK_LIB_PATH)
 CFLAGS			= -O3
 #CFLAGS			= -O -g
-LDFLAGS			= -lrt -lm -lcudart -lcufft
+LDFLAGS			= -lrt -lm -lcufft
 NVCC_FLAGS		= -O3 -arch=sm_20 --use_fast_math #--ptxas-options=-v 
 
 # Default Values
-L			= 128
-SEED			= 1332277027LLU
+L			= 512
+SEED			= 1332277029LLU
 CUTOFF			= 32
 CUDA_DEVICE		= 0
 OFILE			= out.dat
 
 # Simulation Parameters & Compilation Options
 PARAMETERS		= -DLL=$(L) -DCUTOFF=$(CUTOFF) -DSEED=$(SEED) -DCUDA_DEVICE=$(CUDA_DEVICE)
-OPTIONS 		= -DUNIFORM_DISORDER -DLOGARITHMIC_SPACING \
+OPTIONS 			= -D__STDC_CONSTANT_MACROS -DMERSENNE -DUNIFORM_DISORDER -DLOGARITHMIC_SPACING \
 			-DDOUBLE_PRECISION #-DMEASURE_ACCEPTANCE #-DCHECKERBOARD_INIT -DLINEAR_SPACING
 
 # Compilers
 NVCC                    = $(CUDA_INSTALL_PATH)/bin/nvcc
 #VCC                    = nvcc
-GCC                     = g++-4.6
-LINKER                  = g++-4.6
+GCC                     = g++
+LINKER                  = $(CUDA_INSTALL_PATH)/bin/nvcc
 
 # Files
-CPP_SOURCES             = 
+CPP_SOURCES             = mt.cpp
 CU_SOURCES              = $(BIN).cu
 HEADERS                 =
 CPP_OBJS                = $(patsubst %.cpp, %.o, $(CPP_SOURCES))

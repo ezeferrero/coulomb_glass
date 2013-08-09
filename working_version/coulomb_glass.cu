@@ -8,8 +8,15 @@ This version v13 uses a two-step reduction (first within a block, and then globa
 // RNG: PHILOX
 #include <Random123/philox.h>
 #include <Random123/u01.h>
-typedef r123::Philox2x64 RNG2;
-typedef r123::Philox4x64 RNG4;
+
+//Define Philox Seed
+#ifdef DOUBLE_PRECISION
+	typedef r123::Philox2x64 RNG2;
+	typedef r123::Philox4x64 RNG4;
+#else
+	typedef r123::Philox2x32 RNG2;
+	typedef r123::Philox4x32 RNG4;
+#endif
 
 #include <iostream>
 #include <fstream> 	/* print stuff*/
@@ -17,12 +24,10 @@ typedef r123::Philox4x64 RNG4;
 #include <cstdlib>
 #include <cmath>
 #include <sys/times.h>
-//#include <omp.h>
-
 #include <assert.h>	/* assertions */
-#include <cuda.h>
-#include <cuda_runtime.h>
-#include "cutil.h"	/* CUDA_SAFE_CALL, CUT_CHECK_ERROR */
+//#include <omp.h>
+//#include <cuda.h>
+//#include <cuda_runtime.h>
 #include <cufft.h>
 
 #include <thrust/binary_search.h>
@@ -33,6 +38,7 @@ typedef r123::Philox4x64 RNG4;
 #include <thrust/sequence.h>
 #include <thrust/inner_product.h>
 
+#include "cutil.h"	/* CUDA_SAFE_CALL, CUT_CHECK_ERROR */
 #include "../common/histo.h"
 #include "../common/timers_cpu.hpp"
 
@@ -63,7 +69,7 @@ typedef float  FLOAT;
 #endif
 
 #ifndef ELECTRIC_FIELD
-#define ELECTRIC_FIELD 0
+#define ELECTRIC_FIELD 0.1
 #endif
 
 #define NBINS 500
@@ -88,8 +94,8 @@ typedef float  FLOAT;
 #define THREADS_PER_BLOCK 1024
 #define BLOCKS_PER_GRID 65535
 
-#define TILE 128
-#define TILE_X 16
+#define TILE 256
+#define TILE_X 8
 #define TILE_Y 32
 
 // Some predefined Functions (just in case)
@@ -108,6 +114,11 @@ __device__ int d_dipolar_moment;
 __device__ unsigned int d_global_winner;
 __device__ unsigned int d_grid_winner;
 __device__ unsigned int d_accepted;
+
+#ifdef MERSENNE
+extern void init_genrand(unsigned long s);
+extern double genrand_real3(void);
+#endif
 
 /*--------BINARY SEARCH FUNCTION FOR ONE THREAD--------*/
 __device__ 
@@ -149,6 +160,7 @@ FLOAT DeviceBoxMuller(const FLOAT u1, const FLOAT u2)
 #endif
 }
 
+
 __device__
 void PhiloxRandomQuartet(const unsigned int index, const unsigned int time, FLOAT *r1, FLOAT *r2, FLOAT *r3, FLOAT *r4)
 {
@@ -161,15 +173,21 @@ void PhiloxRandomQuartet(const unsigned int index, const unsigned int time, FLOA
 		k_pair[0]= index;
 		// time counter
 		c_pair[0]= 2*time+1;
-		c_pair[1]= SEED; // eventually do: SEED + sample;
+		c_pair[1]= SEED; // eventually do: PHILOX_SEED + sample;
 		// random number generation
 		r_quartet = rng(c_pair, k_pair);
 
-		*r1= u01_closed_closed_64_53(r_quartet[0]);
-		*r2= u01_closed_closed_64_53(r_quartet[1]);
-		*r3= u01_closed_closed_64_53(r_quartet[2]);
-		*r4= u01_closed_closed_64_53(r_quartet[3]);
-
+	#ifdef DOUBLE_PRECISION
+		*r1= u01_open_closed_64_53(r_quartet[0]);
+		*r2= u01_open_closed_64_53(r_quartet[1]);
+		*r3= u01_open_closed_64_53(r_quartet[2]);
+		*r4= u01_open_closed_64_53(r_quartet[3]);
+	#else
+		*r1= u01_open_closed_32_53(r_quartet[0]);
+		*r2= u01_open_closed_32_53(r_quartet[1]);
+		*r3= u01_open_closed_32_53(r_quartet[2]);
+		*r4= u01_open_closed_32_53(r_quartet[3]);
+	#endif
 }
 
 __device__
@@ -184,12 +202,17 @@ void PhiloxRandomPair(const unsigned int index, const unsigned int time, FLOAT *
 		k_pair[0]= index;
 		// time counter
 		c_pair[0]= 2*time;
-		c_pair[1]= SEED; // eventually do: SEED + sample;
+		c_pair[1]= SEED; // eventually do: PHILOX_SEED + sample;
 		// random number generation
 		r_pair = rng(c_pair, k_pair);
 
-		*r1= u01_closed_closed_64_53(r_pair[0]);
-		*r2= u01_closed_closed_64_53(r_pair[1]);
+	#ifdef DOUBLE_PRECISION
+		*r1= u01_open_closed_64_53(r_pair[0]);
+		*r2= u01_open_closed_64_53(r_pair[1]);
+	#else
+		*r1= u01_open_closed_32_53(r_pair[0]);
+		*r2= u01_open_closed_32_53(r_pair[1]);
+	#endif
 }
 
 /*--------UPDATE ROUTINES--------*/
@@ -375,8 +398,8 @@ void Kernel_InitializeOccNumber(const unsigned int rng_counter, unsigned int *d_
 			d_occ_number[idx + NN/2] = (r2 < 0.5);
 #else
 			//Checkerboard Initialization
-			d_occ_number[idx] = (idx+(idx/512)%2)%2;
-			d_occ_number[idx + NN/2] = (idx+(idx/512)%2)%2;
+			d_occ_number[idx] = (idx+(idx/LL)%2)%2;
+			d_occ_number[idx + NN/2] = (idx+(idx/LL)%2)%2;
 #endif
 	}
 }
@@ -451,8 +474,13 @@ FLOAT BoxMuller()
 	static FLOAT x1;
 	static FLOAT x2;
 	if(empty) {
+#ifdef MERSENNE
+		const FLOAT u1 = genrand_real3();
+		const FLOAT u2 = genrand_real3();
+#else
 		const FLOAT u1 = (FLOAT)random()/RAND_MAX;
 		const FLOAT u2 = (FLOAT)random()/RAND_MAX;
+#endif
 		x1 = sqrt(-2. * log(u1)) * cos(2. * M_PI * u2);
 		x2 = sqrt(-2. * log(u1)) * sin(2. * M_PI * u2);
 		empty = false;
@@ -537,16 +565,17 @@ void CalculateLocalEnergies_onGPU(const unsigned int *d_occ_number, FLOAT *d_loc
 	CUFFT_SAFE_CALL(cufftExecR2C(Sr2c, d_local_ene, d_local_ene_c));
 
 	// Perform complex product
-#ifdef SMALL_SIZE
+	dim3 dimBlock; dim3 dimGrid;
+	if(SMALL_SIZE){
 	assert(LL%16==0);
-	dim3 dimBlock(16);
-	dim3 dimGrid((LL*(LL/2+1)+16-1)/16);
-#else
-	dim3 dimBlock(TILE);
-	dim3 dimGrid((LL*(LL/2+1)+TILE-1)/TILE);
-#endif
-	assert(dimBlock.x*dimBlock.y<=THREADS_PER_BLOCK);
-	assert(dimGrid.x<=BLOCKS_PER_GRID && dimGrid.y<=BLOCKS_PER_GRID);
+	dimBlock.x=16;
+	dimGrid.x=((LL*(LL/2+1)+16-1)/16);
+	}else{
+	dimBlock.x=TILE;
+	dimGrid.x=((LL*(LL/2+1)+TILE-1)/TILE);
+	}
+	assert(dimBlock.x<=THREADS_PER_BLOCK);
+	assert(dimGrid.x<=BLOCKS_PER_GRID);
 
 	Kernel_ComplexProduct<<<dimGrid, dimBlock>>>(LL*(LL/2+1), d_half_magn_c, d_local_ene_c);
 
@@ -583,7 +612,11 @@ void InitializeOccNumber_onCPU(unsigned int *occ_number, unsigned int *d_occ_num
 
 	//TODO: throw away some random() numbers to uncorrelate the rng
 	for(unsigned int i = NN; i--; ) {
+#ifdef MERSENNE
+		occ_number[i] = 1*(genrand_real3()<0.5);
+#else
 		occ_number[i] = random() & 0x1u;  //smalles bit of "random" is 0 or 1
+#endif
 		if (occ_number[i]==1){ n_filled++; }else{n_empty++;} 
 	}
 
@@ -591,7 +624,11 @@ void InitializeOccNumber_onCPU(unsigned int *occ_number, unsigned int *d_occ_num
 	int excessofones = (n_filled - n_empty);
 	unsigned int N =NN;
 	while (excessofones!=0){
+#ifdef MERSENNE
+	unsigned int i = (int)(genrand_real3()*N);
+#else
 	unsigned int i = random()%N;
+#endif
 		if (excessofones>0 && occ_number[i]==1) {occ_number[i]=0; excessofones-=2;}
 		if (excessofones<0 && occ_number[i]==0) {occ_number[i]=1; excessofones+=2;}
 	}
@@ -657,9 +694,9 @@ void ComputeGlobalEnergyDipolarMomentAndPrint(thrust::device_ptr<unsigned int> &
 					const FLOAT acceptance)
 {
 	// Compute the total energy
-	FLOAT t1 = thrust::reduce(local_energy_ptr, local_energy_ptr + NN, 0, thrust::plus<FLOAT>());
-	FLOAT t2 = thrust::inner_product(occ_number_ptr, occ_number_ptr + NN, local_energy_ptr, 0);
-	FLOAT t3 = thrust::inner_product(occ_number_ptr, occ_number_ptr + NN, random_field_ptr, 0);
+	FLOAT t1 = thrust::reduce(local_energy_ptr, local_energy_ptr + NN, 0.0, thrust::plus<FLOAT>());
+	FLOAT t2 = thrust::inner_product(occ_number_ptr, occ_number_ptr + NN, local_energy_ptr, 0.0);
+	FLOAT t3 = thrust::inner_product(occ_number_ptr, occ_number_ptr + NN, random_field_ptr, 0.0);
 	const FLOAT total_energy = 0.5 * (t2 + t3) - 0.25 * (t1 - sum_random_fields);
 	CUDA_SAFE_CALL(cudaMemcpyFromSymbol(&dipolar_moment, d_dipolar_moment, sizeof(unsigned int), 0, \
 			cudaMemcpyDeviceToHost));
@@ -667,12 +704,14 @@ void ComputeGlobalEnergyDipolarMomentAndPrint(thrust::device_ptr<unsigned int> &
 	#warning OUTPUT HERE
 	#ifdef MEASURE_ACCEPTANCE
 	if (kmc_steps==0) cout << "# kmc_time	energy_per_site	dipolar_moment	kmc_steps	acceptance" << endl;
-	cout << std::setprecision (15) << kmc_time << " " << total_energy/(1.*NN) << " " << \
-			dipolar_moment << " "<< kmc_steps << " "<< acceptance << " " << endl;
+	// On 5/8/2013 we added normalization to kmc_time, kmc_steps and dipolar_moment, that were missing.
+	cout << std::setprecision (15) << kmc_time/(1.*NN) << " " << total_energy/(1.*NN) << " " << \
+			dipolar_moment/(1.*NN) << " "<< kmc_steps/(1.*NN) << " "<< acceptance << " " << endl;
 	#else
 	if (kmc_steps==0) cout << "# kmc_time	energy_per_site	dipolar_moment	kmc_steps" << endl;
-	cout << std::setprecision (15) << kmc_time << " " << total_energy/(1.*NN) << " " << \
-			dipolar_moment << " " << kmc_steps << " " << endl;
+	// On 5/8/2013 we added normalization to kmc_time, kmc_steps and dipolar_moment, that were missing.
+	cout << std::setprecision (15) << kmc_time/(1.*NN) << " " << total_energy/(1.*NN) << " " << \
+			dipolar_moment/(1.*NN) << " " << kmc_steps/(1.*NN) << " " << endl;
 	#endif
 }
 
@@ -774,7 +813,7 @@ int main(int argc, char **argv) {
 	/*------------INPUT----------------*/
 
 	if(argc < 4) {
-		cerr << "\n\n\t\tUsage: " << argv[0] << " TEMPERATURE NUMBER_OF_ITERATIONS log2(M) [SEED_RANDOM] \
+		cerr << "\n\n\t\tUsage: " << argv[0] << " TEMPERATURE NUMBER_OF_ITERATIONS log2(M) [SEED_CPU_RNG] \
 [stored_random_fields (name with quotes)] [stored_configuration (name with quotes)] \n\n";
 		return 1;
 	}
@@ -793,7 +832,11 @@ int main(int argc, char **argv) {
 	if(argc > 6) stored_configuration.open(argv[6]);
 
 	//print simulation parameters
+#ifdef MERSENNE
+	cout << "### SEED genrand3()....................: " << seed_random << endl;
+#else
 	cout << "### SEED random() .....................: " << seed_random << endl;
+#endif
 	cout << "### SEED Philox .......................: " << SEED << endl;
 	cout << "### L .................................: " << LL    << endl;
 	cout << "### TEMPERATURE .......................: " << TEMPERATURE << endl;
@@ -813,8 +856,11 @@ int main(int argc, char **argv) {
 #endif
 
 	// Initialize random()
+#ifdef MERSENNE
+	init_genrand(seed_random);
+#else
 	srandom(seed_random);
-
+#endif
 	/*------- DECLARE ARRAYS ON HOST --------*/
 	vector<unsigned int> occ_number(NN);	//System
 	vector<FLOAT>  local_energy(NN);	//Local energies
@@ -896,8 +942,8 @@ int main(int argc, char **argv) {
 	#endif
 	FLOAT acceptance;
 	int dipolar_moment;
-	FLOAT electric_field = ELECTRIC_FIELD;
-	//FLOAT electric_field = TEMPERATURE/10.;
+	//FLOAT electric_field = ELECTRIC_FIELD;
+	FLOAT electric_field = TEMPERATURE/10.;
 
 	unsigned int *d_prop_pairs;
 	CUDA_SAFE_CALL(cudaMalloc((void**)&d_prop_pairs, sizeof(unsigned int)*(M/TILE)*2));
@@ -965,8 +1011,14 @@ int main(int argc, char **argv) {
 		}while(global_winner == M);
 		total_acc_moves++;
 
-		FLOAT rand_time = (-1.)*log((FLOAT)random()/RAND_MAX);
-		kmc_time += (FLOAT)(attemps_counter-1)*M + global_winner*(gamma/rand_time);
+#ifdef MERSENNE
+		FLOAT rand_time = (-1.)*log(genrand_real3());
+#else
+		FLOAT rand_time = (-1.)*log((FLOAT)(random()/RAND_MAX+1e-10));
+#endif
+		//kmc_time += (FLOAT)(attemps_counter-1)*M + global_winner*(gamma/rand_time);
+		// On 5/8/2013 changed to the more accurate expresion:
+		kmc_time += (FLOAT)((attemps_counter-1)*M + global_winner)*(gamma/rand_time);
 
 		#ifdef MEASURE_ACCEPTANCE
 		CUDA_SAFE_CALL(cudaMemcpyFromSymbol(&accepted, d_accepted, sizeof(unsigned int), 0, \
