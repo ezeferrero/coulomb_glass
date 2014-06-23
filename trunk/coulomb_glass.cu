@@ -1,9 +1,38 @@
 /*
-CUDA Coulomb Glass 
-Simulates the dynamics of a Coulomb Glass in 2D using a "parallel rejection method"
-
-This version v13 uses a two-step reduction (first within a block, and then globally) to choose the "winner".
+ * CUDA Coulomb Glass 
 */
+
+/*
+ * coulomb_glass.cu is a CUDA implementation of a 2D Coulomb Glass model.
+ * The program simulates the Kinetic Monte Carlo dynamics of a gas of electrons hopping in a 2D square lattice 
+ * with randomly distributed (quenched) energy traps.
+ * This program implements the "Parallel Rejection" method described in our paper.
+.*
+ * Started on: Jan, 2013 by ezeferrero
+ * Copyright (C) 2014 Ezequiel E. Ferrero, Alejandro B. Kolton and Matteo Palassini.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See the GNU General Public License for more details.
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
+/*
+ * This code was originally implemented for: "Parallel kinetic Monte Carlo simulation of Coulomb glasses",
+ * E.E. Ferrero, A.B. Kolton and M. Palassini
+ * http://arxiv.org/abs/XXXX
+ * AIP Conference Proceedings XX, XX (2014)
+ *
+ * Please cite when appropriate.
+ */
+
 
 // RNG: PHILOX
 #include <Random123/philox.h>
@@ -115,10 +144,9 @@ __device__ unsigned int d_global_winner;
 __device__ unsigned int d_grid_winner;
 __device__ unsigned int d_accepted;
 
-#ifdef MERSENNE
 extern void init_genrand(unsigned long s);
 extern double genrand_real3(void);
-#endif
+extern double gasdev_real3(void);
 
 /*--------BINARY SEARCH FUNCTION FOR ONE THREAD--------*/
 __device__ 
@@ -239,7 +267,10 @@ void Kernel_ProposeJumpsAndEvaluateMetropolis(const unsigned int M, const FLOAT 
 		int x1 = site1 - y1 * LL;
 
 		// choose a jump from the tower at random using r4
-		const unsigned int index = LowerBound(tower, r4, 0, tower_size-1)+1;
+
+		// const unsigned int index = LowerBound(tower, r4, 0, tower_size-1)+1; <--- corrected 8/9/2013
+		const unsigned int index = LowerBound(tower-1, r4, 0, tower_size);
+
 		int deltax=dx[index];
 		int deltay=dy[index];
 
@@ -474,13 +505,10 @@ FLOAT BoxMuller()
 	static FLOAT x1;
 	static FLOAT x2;
 	if(empty) {
-#ifdef MERSENNE
+
 		const FLOAT u1 = genrand_real3();
 		const FLOAT u2 = genrand_real3();
-#else
-		const FLOAT u1 = (FLOAT)random()/RAND_MAX;
-		const FLOAT u2 = (FLOAT)random()/RAND_MAX;
-#endif
+
 		x1 = sqrt(-2. * log(u1)) * cos(2. * M_PI * u2);
 		x2 = sqrt(-2. * log(u1)) * sin(2. * M_PI * u2);
 		empty = false;
@@ -610,13 +638,10 @@ void InitializeOccNumber_onCPU(unsigned int *occ_number, unsigned int *d_occ_num
 	unsigned int n_filled = 0;
 	unsigned int n_empty  = 0;
 
-	//TODO: throw away some random() numbers to uncorrelate the rng
 	for(unsigned int i = NN; i--; ) {
-#ifdef MERSENNE
+
 		occ_number[i] = 1*(genrand_real3()<0.5);
-#else
-		occ_number[i] = random() & 0x1u;  //smalles bit of "random" is 0 or 1
-#endif
+
 		if (occ_number[i]==1){ n_filled++; }else{n_empty++;} 
 	}
 
@@ -624,11 +649,7 @@ void InitializeOccNumber_onCPU(unsigned int *occ_number, unsigned int *d_occ_num
 	int excessofones = (n_filled - n_empty);
 	unsigned int N =NN;
 	while (excessofones!=0){
-#ifdef MERSENNE
-	unsigned int i = (int)(genrand_real3()*N);
-#else
-	unsigned int i = random()%N;
-#endif
+		unsigned int i = (int)(genrand_real3()*N);
 		if (excessofones>0 && occ_number[i]==1) {occ_number[i]=0; excessofones-=2;}
 		if (excessofones<0 && occ_number[i]==0) {occ_number[i]=1; excessofones+=2;}
 	}
@@ -708,10 +729,10 @@ void ComputeGlobalEnergyDipolarMomentAndPrint(thrust::device_ptr<unsigned int> &
 	cout << std::setprecision (15) << kmc_time/(1.*NN) << " " << total_energy/(1.*NN) << " " << \
 			dipolar_moment/(1.*NN) << " "<< kmc_steps/(1.*NN) << " "<< acceptance << " " << endl;
 	#else
-	if (kmc_steps==0) cout << "# kmc_time	energy_per_site	dipolar_moment	kmc_steps" << endl;
+	if (kmc_steps==0) cout << "# kmc_time	energy_per_site	dipolar_moment	kmc_steps acceptance" << endl;
 	// On 5/8/2013 we added normalization to kmc_time, kmc_steps and dipolar_moment, that were missing.
 	cout << std::setprecision (15) << kmc_time/(1.*NN) << " " << total_energy/(1.*NN) << " " << \
-			dipolar_moment/(1.*NN) << " " << kmc_steps/(1.*NN) << " " << endl;
+			dipolar_moment/(1.*NN) << " " << kmc_steps/(1.*NN) << " " << acceptance << endl;
 	#endif
 }
 
@@ -777,8 +798,8 @@ void PrintLocalEnergies(vector<FLOAT> &local_energy, FLOAT *d_local_energy, cons
 	cudaMemcpyDeviceToHost));
 	sprintf(filename, "LocalEnergies-L%iM%iT%.4fite%i.dat",LL,M,TEMPERATURE,1000000000+iterations);
 	ofstream file1(filename);
-	file1 << "#Local energies after" << ITEMAX+1-iterations << "iterations corresponding to time" << kmc_steps << \
-			endl;
+	file1 << "#Local energies after" << iterations << "hops, corresponding to time (normalized with system size)" \
+	<< kmc_steps/(1.*NN) << endl;
 	for(unsigned int i = NN; i--; ) file1 << local_energy[i] << endl;
 }
 
@@ -832,11 +853,7 @@ int main(int argc, char **argv) {
 	if(argc > 6) stored_configuration.open(argv[6]);
 
 	//print simulation parameters
-#ifdef MERSENNE
 	cout << "### SEED genrand3()....................: " << seed_random << endl;
-#else
-	cout << "### SEED random() .....................: " << seed_random << endl;
-#endif
 	cout << "### SEED Philox .......................: " << SEED << endl;
 	cout << "### L .................................: " << LL    << endl;
 	cout << "### TEMPERATURE .......................: " << TEMPERATURE << endl;
@@ -855,12 +872,9 @@ int main(int argc, char **argv) {
 	CUDA_SAFE_CALL(cudaSetDevice(CUDA_DEVICE));
 #endif
 
-	// Initialize random()
-#ifdef MERSENNE
+	// Initialize Mersenne
 	init_genrand(seed_random);
-#else
-	srandom(seed_random);
-#endif
+
 	/*------- DECLARE ARRAYS ON HOST --------*/
 	vector<unsigned int> occ_number(NN);	//System
 	vector<FLOAT>  local_energy(NN);	//Local energies
@@ -958,6 +972,7 @@ int main(int argc, char **argv) {
 	clock.tic();
 
 	/*------- UPDATES MAIN LOOP ------*/
+	acceptance=1;
 	for (unsigned int iterations=0; iterations<ITEMAX+1; iterations++) {
 
 		// Print some data if some condition occurs
@@ -1011,20 +1026,20 @@ int main(int argc, char **argv) {
 		}while(global_winner == M);
 		total_acc_moves++;
 
-#ifdef MERSENNE
-		FLOAT rand_time = (-1.)*log(genrand_real3());
-#else
-		FLOAT rand_time = (-1.)*log((FLOAT)(random()/RAND_MAX+1e-10));
-#endif
-		//kmc_time += (FLOAT)(attemps_counter-1)*M + global_winner*(gamma/rand_time);
-		// On 5/8/2013 changed to the more accurate expresion:
-		kmc_time += (FLOAT)((attemps_counter-1)*M + global_winner)*(gamma/rand_time);
+		FLOAT rand_time = gasdev_real3();
+
+		FLOAT ntrials = ((attemps_counter-1)*M + global_winner);
+		kmc_time += ntrials/gamma + sqrt(ntrials)*rand_time/gamma;
+
 
 		#ifdef MEASURE_ACCEPTANCE
 		CUDA_SAFE_CALL(cudaMemcpyFromSymbol(&accepted, d_accepted, sizeof(unsigned int), 0, \
 		cudaMemcpyDeviceToHost));
 		acceptance = accepted/(FLOAT)(attemps_counter*M);
 		#endif
+		// A more simple acceptance per hop is: 
+		acceptance=1.0/(FLOAT)((attemps_counter-1)*M + global_winner + 1);
+		
 
 		// Perform a hop
 		Kernel_PerformHopping<<<1, 1>>>(global_winner, d_prop_pairs, d_occ_number);
@@ -1046,9 +1061,10 @@ int main(int argc, char **argv) {
 	FLOAT total_time = clock.cpu_elapsed();
 	cout << "### KMC steps     : " << kmc_steps/(float)NN << endl;
 	cout << "### Acc. moves    : " << total_acc_moves  << endl;
+	cout << "### Trial moves   : " << kmc_steps  << endl;
 	cout << "### Total time    : " << total_time  << " ms" << endl;
 	cout << "### Time per jump : " << total_time/total_acc_moves << " ms/jump" << endl;
-	cout << "### Time per MCs  : " << total_time/kmc_steps*NN << " ms/MCS" << endl;
+	cout << "### Time per MCs  : " << total_time/(kmc_steps/NN) << " ms/MCS" << endl;
 
 	//// DtoH COPY, CHECK AND PRINT RESULTS ////
 	CheckSelfConsistency(d_occ_number, d_local_energy, d_random_field, occ_number, local_energy, random_field);
