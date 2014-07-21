@@ -27,8 +27,9 @@
 /*
  * This code was originally implemented for: "Parallel kinetic Monte Carlo simulation of Coulomb glasses",
  * E.E. Ferrero, A.B. Kolton and M. Palassini
- * http://arxiv.org/abs/XXXX
+ * http://arxiv.org/abs/1407.5026
  * AIP Conference Proceedings XX, XX (2014)
+ * Proceedings of the TIDS15 Conference, September 2013
  *
  * Please cite when appropriate.
  */
@@ -267,8 +268,6 @@ void Kernel_ProposeJumpsAndEvaluateMetropolis(const unsigned int M, const FLOAT 
 		int x1 = site1 - y1 * LL;
 
 		// choose a jump from the tower at random using r4
-
-		// const unsigned int index = LowerBound(tower, r4, 0, tower_size-1)+1; <--- corrected 8/9/2013
 		const unsigned int index = LowerBound(tower-1, r4, 0, tower_size);
 
 		int deltax=dx[index];
@@ -692,22 +691,6 @@ void InitializeRandomFieldsFromFile(FLOAT *random_field, FLOAT *d_random_field, 
 }
 
 /*--------CALCULATION ROUTINES--------*/
-/*
-void CalculateAccumulateEnergyHistogram(unsigned int index, thrust::device_vector<FLOAT> &histogram_accum, \
-					FLOAT leftlimit, FLOAT rightlimit, int numberofbins, FLOAT *local_energy){
-
-	thrust::device_vector<FLOAT> input;
-	input.resize(NN);
-	thrust::copy(local_energy, local_energy + NN, input.begin());
-
-	thrust::device_vector<FLOAT> histogram(numberofbins);
-	dense_histogram_data_on_device(input, histogram, leftlimit, rightlimit);
-
-	thrust::transform(histogram.begin(), histogram.end(), histogram_accum.begin()+index*numberofbins, \
-			histogram_accum.begin()+index*numberofbins, thrust::plus<FLOAT>());
-}
-*/
-
 void ComputeGlobalEnergyDipolarMomentAndPrint(thrust::device_ptr<unsigned int> &occ_number_ptr, \
 					thrust::device_ptr<FLOAT> &local_energy_ptr, \
 					thrust::device_ptr<FLOAT> &random_field_ptr, int dipolar_moment, \
@@ -725,12 +708,10 @@ void ComputeGlobalEnergyDipolarMomentAndPrint(thrust::device_ptr<unsigned int> &
 	#warning OUTPUT HERE
 	#ifdef MEASURE_ACCEPTANCE
 	if (kmc_steps==0) cout << "# kmc_time	energy_per_site	dipolar_moment	kmc_steps	acceptance" << endl;
-	// On 5/8/2013 we added normalization to kmc_time, kmc_steps and dipolar_moment, that were missing.
 	cout << std::setprecision (15) << kmc_time/(1.*NN) << " " << total_energy/(1.*NN) << " " << \
 			dipolar_moment/(1.*NN) << " "<< kmc_steps/(1.*NN) << " "<< acceptance << " " << endl;
 	#else
 	if (kmc_steps==0) cout << "# kmc_time	energy_per_site	dipolar_moment	kmc_steps acceptance" << endl;
-	// On 5/8/2013 we added normalization to kmc_time, kmc_steps and dipolar_moment, that were missing.
 	cout << std::setprecision (15) << kmc_time/(1.*NN) << " " << total_energy/(1.*NN) << " " << \
 			dipolar_moment/(1.*NN) << " " << kmc_steps/(1.*NN) << " " << acceptance << endl;
 	#endif
@@ -765,34 +746,10 @@ void CheckSelfConsistency(const unsigned int *d_occ_number, const FLOAT *d_local
 }
 
 /*--------PRINT ROUTINES--------*/
-/*
-void PrintEnergyHistogramAccum(ofstream &fstr, int maxindex,  int s, FLOAT leftlimit, FLOAT rightlimit, \
-				thrust::device_vector<FLOAT> &histogram_accum)
-{
-	//thrust::host_vector<int> H = histogram_accum;
-	FLOAT increment= (rightlimit-leftlimit)/NBINS;
-
-	fstr << "#Velocity histogram for" << s << "samples " << endl;
-	for(int index=0; index<maxindex; index++){
-		fstr << "#Velocity histogram for two to the" << index << endl;
-		for(int i=0;i<NBINS;i++)
-		{
-		fstr << leftlimit+(i)*increment << " " << histogram_accum[index*NBINS+i] / FLOAT(s) << endl;
-		}
-		fstr << endl << endl;
-	}
-	fstr << endl;
-};
-*/
-
 void PrintLocalEnergies(vector<FLOAT> &local_energy, FLOAT *d_local_energy, const unsigned long long kmc_steps, \
 			unsigned int iterations, const unsigned int M, const unsigned int ITEMAX, \
 			const FLOAT TEMPERATURE)
 {
-	//TODO: Implement histogram calculation
-	//CalculateAccumulateEnergyHistogram(LL, index1, histogram_accum, LEFTLIMIT, RIGHTLIMIT, NBINS, d_local_energy);
-	//index1++;
-
 	char filename [128];
 	CUDA_SAFE_CALL(cudaMemcpy(&local_energy[0], d_local_energy, sizeof(FLOAT)*NN, \
 	cudaMemcpyDeviceToHost));
@@ -936,12 +893,6 @@ int main(int argc, char **argv) {
 			thrust::plus<FLOAT>());
 	const FLOAT sum_random_fields = thrust::reduce(random_field_ptr, random_field_ptr + NN);
 
-	/*------- INITIALIZE HISTOGRAMS -------*/
-	/*thrust::device_vector<FLOAT> histogram_accum;
-	histogram_accum.resize(NBINS*(ITEMAX/T_DATA+1));
-	thrust::fill(histogram_accum.begin(),histogram_accum.end(),0);
-	*/
-
 	/*------- INITIALIZE FURTHER VARIABLES ------*/
 	unsigned long long kmc_steps = 0;
 	FLOAT kmc_time = 0.;
@@ -1078,11 +1029,6 @@ int main(int argc, char **argv) {
 	cout << "### Local energies" << endl;
 	//CUDA_SAFE_CALL(cudaMemcpy(&local_energy[0], d_local_energy, sizeof(FLOAT)*NN, cudaMemcpyDeviceToHost));
 	for(unsigned int i = NN; i--; ) cout << local_energy[i] << endl;	// Print the local energy
-
-	char filename [128];
-	sprintf(filename, "EnergyDensityHistogram%iM%ib%.2f.dat",LL,M,beta);
-	ofstream file5(filename);
-//	PrintEnergyHistogramAccum(file5, ITEMAX/T_DATA+1, 1, LEFTLIMIT, RIGHTLIMIT, histogram_accum);
 */
 
 	return 0;
